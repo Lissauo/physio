@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{
   --primary:#58CC02; --primary-d:#46A302; --primary-t:#D7FFB8;
@@ -558,6 +559,108 @@ button{font-family:inherit}
 </div>
 
 <script>
+// ===================== SUPABASE SETUP =====================
+const SUPABASE_URL = 'https://htupodnviutwodgcdqnb.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_3k0IL0r_GId5OUz5TmhKpA_y86GzBOD';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// User ID gebaseerd op hostname (zelfde progress per link op elk device)
+const userId = 'user_' + window.location.hostname.replace(/[^a-zA-Z0-9]/g, '_');
+
+// ===================== DATABASE FUNCTIONS =====================
+async function loadProgressFromDB() {
+  try {
+    const { data, error } = await supabase
+      .from('user_progress')
+      .select('*')
+      .eq('user_id', userId);
+    
+    if (error) throw error;
+    
+    // Converteer database data naar localStorage formaat
+    const progress = {};
+    data.forEach(item => {
+      progress[item.vocab_id] = {
+        learned: item.learned,
+        mastery: item.mastery_level,
+        lastReviewed: item.last_reviewed
+      };
+    });
+    
+    return progress;
+  } catch (e) {
+    console.error('Fout bij laden progress:', e);
+    return {};
+  }
+}
+
+async function saveProgressToDB(vocabId, learned, mastery) {
+  try {
+    const { error } = await supabase
+      .from('user_progress')
+      .upsert({
+        user_id: userId,
+        vocab_id: vocabId,
+        learned: learned,
+        mastery_level: mastery,
+        last_reviewed: new Date().toISOString()
+      }, {
+        onConflict: 'user_id,vocab_id'
+      });
+    
+    if (error) throw error;
+  } catch (e) {
+    console.error('Fout bij opslaan progress:', e);
+  }
+}
+
+async function loadStats() {
+  try {
+    const { data, error } = await supabase
+      .from('user_stats')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+    
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // Geen stats gevonden, maak nieuwe
+        return { streak: 0, bestStreak: 0, totalLearned: 0 };
+      }
+      throw error;
+    }
+    
+    return {
+      streak: data.streak,
+      bestStreak: data.best_streak,
+      totalLearned: data.total_learned
+    };
+  } catch (e) {
+    console.error('Fout bij laden stats:', e);
+    return { streak: 0, bestStreak: 0, totalLearned: 0 };
+  }
+}
+
+async function saveStats(streak, bestStreak, totalLearned) {
+  try {
+    const { error } = await supabase
+      .from('user_stats')
+      .upsert({
+        user_id: userId,
+        streak: streak,
+        best_streak: bestStreak,
+        total_learned: totalLearned,
+        last_active: new Date().toISOString()
+      }, {
+        onConflict: 'user_id'
+      });
+    
+    if (error) throw error;
+  } catch (e) {
+    console.error('Fout bij opslaan stats:', e);
+  }
+}
+
 // ===================== DONNÉES VOCAB =====================
 // NOTE: VOCAB_DEEL2 ci-dessous doit être complété avec le contenu de deel2_vocab.js
 // Coller le tableau VOCAB_DEEL2 complet ici (environ 191 termes, unités 3-6)
@@ -5781,25 +5884,72 @@ const GLOBAL_ACCEPT=new Set();VOCAB.forEach(v=>v.accept.forEach(a=>GLOBAL_ACCEPT
 // ===================== STATE =====================
 const G={xp:0,streak:0,bestStreak:0,totalCorrect:0,totalWrong:0,totalAnswered:0,word:new Map(),lessonDone:new Set()};
 const SAVE_KEY='physioProgress';
-function saveProgress(){
+async function saveProgress(){
   try{
+    // Sla lokaal op als backup
     localStorage.setItem(SAVE_KEY,JSON.stringify({
       xp:G.xp,streak:G.streak,bestStreak:G.bestStreak,
       totalCorrect:G.totalCorrect,totalWrong:G.totalWrong,totalAnswered:G.totalAnswered,
       word:[...G.word.entries()],lessonDone:[...G.lessonDone]
     }));
-  }catch(e){}
+    
+    // Sla ook naar database
+    await saveStats(G.streak, G.bestStreak, learnedCount());
+    
+    // Sla elk woord progress naar database
+    for (const [id, state] of G.word.entries()) {
+      await saveProgressToDB(id, state.learned, state.mastered ? 5 : (state.learned ? 3 : 0));
+    }
+  }catch(e){
+    console.error('Fout bij opslaan:', e);
+  }
 }
-function loadProgress(){
+async function loadProgress(){
   try{
-    const raw=localStorage.getItem(SAVE_KEY);
-    if(!raw)return;
-    const d=JSON.parse(raw);
-    G.xp=d.xp||0;G.streak=d.streak||0;G.bestStreak=d.bestStreak||0;
-    G.totalCorrect=d.totalCorrect||0;G.totalWrong=d.totalWrong||0;G.totalAnswered=d.totalAnswered||0;
-    if(Array.isArray(d.word))G.word=new Map(d.word);
-    if(Array.isArray(d.lessonDone))G.lessonDone=new Set(d.lessonDone);
-  }catch(e){}
+    // Proeer eerst uit database
+    const dbStats = await loadStats();
+    const dbProgress = await loadProgressFromDB();
+    
+    if (Object.keys(dbProgress).length > 0) {
+      // Laad uit database
+      G.streak = dbStats.streak;
+      G.bestStreak = dbStats.bestStreak;
+      G.totalLearned = dbStats.totalLearned;
+      
+      for (const [id, state] of Object.entries(dbProgress)) {
+        G.word.set(parseInt(id), {
+          ef: 2.5,
+          interval: 0,
+          reps: 0,
+          mastered: state.mastery >= 5,
+          learned: state.learned,
+          seen: true,
+          everWrong: false
+        });
+      }
+    } else {
+      // Fallback naar localStorage
+      const raw=localStorage.getItem(SAVE_KEY);
+      if(!raw)return;
+      const d=JSON.parse(raw);
+      G.xp=d.xp||0;G.streak=d.streak||0;G.bestStreak=d.bestStreak||0;
+      G.totalCorrect=d.totalCorrect||0;G.totalWrong=d.totalWrong||0;G.totalAnswered=d.totalAnswered||0;
+      if(Array.isArray(d.word))G.word=new Map(d.word);
+      if(Array.isArray(d.lessonDone))G.lessonDone=new Set(d.lessonDone);
+    }
+  }catch(e){
+    console.error('Fout bij laden:', e);
+    // Fallback naar localStorage
+    try{
+      const raw=localStorage.getItem(SAVE_KEY);
+      if(!raw)return;
+      const d=JSON.parse(raw);
+      G.xp=d.xp||0;G.streak=d.streak||0;G.bestStreak=d.bestStreak||0;
+      G.totalCorrect=d.totalCorrect||0;G.totalWrong=d.totalWrong||0;G.totalAnswered=d.totalAnswered||0;
+      if(Array.isArray(d.word))G.word=new Map(d.word);
+      if(Array.isArray(d.lessonDone))G.lessonDone=new Set(d.lessonDone);
+    }catch(e2){}
+  }
 }
 loadProgress();
 window.addEventListener('beforeunload',saveProgress);
