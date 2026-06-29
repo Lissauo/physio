@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
 :root{
   --primary:#58CC02; --primary-d:#46A302; --primary-t:#D7FFB8;
@@ -322,9 +323,15 @@ button{font-family:inherit}
 }
 #mdRendered a { color:var(--accent) }
 #mdRendered code { background:var(--code-bg); color:var(--text) }
+.sync-indicator{position:fixed;bottom:80px;right:16px;z-index:500;background:var(--bg);border:2px solid var(--border);border-radius:12px;padding:8px 14px;font-size:13px;font-weight:700;color:var(--muted);box-shadow:var(--shadow);display:flex;align-items:center;gap:8px;transition:opacity .3s;pointer-events:none}
+.sync-indicator.syncing{color:var(--accent)}
+.sync-indicator.ok{color:var(--primary)}
+.sync-indicator.err{color:var(--error)}
+@media(min-width:700px){.sync-indicator{bottom:16px}}
 </style>
 
 <body>
+<div id="syncIndicator" class="sync-indicator" style="display:none"></div>
 <div class="app">
   <aside class="sidebar">
     <div class="logo">
@@ -5691,7 +5698,68 @@ const VOCAB_DEEL2_EXTRA = [
   img:"fotos/Synthèse Partie 2/_page_227_Figure_6.jpeg" }
 ];
 
-// Assemblage final — tout concaténé
+// ===================== SUPABASE =====================
+const SB_URL='https://htupodnviutwodgcdqnb.supabase.co';
+const SB_KEY='sb_publishable_3k0IL0r_GId5OUz5TmhKpA_y86GzBOD';
+const sb=(typeof window.supabase!=='undefined')?window.supabase.createClient(SB_URL,SB_KEY):null;
+let SB_USER=null;
+
+function showSync(msg,cls){
+  const el=document.getElementById('syncIndicator');
+  if(!el)return;
+  el.textContent=msg;el.className='sync-indicator '+cls;el.style.display='flex';
+  if(cls==='ok'||cls==='err')setTimeout(()=>{el.style.opacity='0';setTimeout(()=>{el.style.display='none';el.style.opacity='1';},600);},2500);
+}
+
+async function syncToSupabase(){
+  if(!sb||!SB_USER)return;
+  showSync('⟳ Sauvegarde…','syncing');
+  try{
+    await sb.from('user_stats').upsert({
+      user_id:SB_USER,streak:G.streak,best_streak:G.bestStreak,
+      total_learned:learnedCount(),last_active:new Date().toISOString()
+    },{onConflict:'user_id'});
+    const rows=[];
+    G.word.forEach((s,id)=>{
+      rows.push({user_id:SB_USER,vocab_id:id,learned:s.learned,mastery_level:s.reps,last_reviewed:new Date().toISOString()});
+    });
+    if(rows.length){
+      for(let i=0;i<rows.length;i+=200){
+        await sb.from('user_progress').upsert(rows.slice(i,i+200),{onConflict:'user_id,vocab_id'});
+      }
+    }
+    showSync('✓ Sauvegardé','ok');
+  }catch(e){showSync('✗ Erreur sync','err');}
+}
+
+async function loadFromSupabase(userId){
+  if(!sb)return;
+  showSync('⟳ Chargement…','syncing');
+  try{
+    const {data:stats}=await sb.from('user_stats').select('*').eq('user_id',userId).maybeSingle();
+    if(stats){
+      G.streak=Math.max(G.streak,stats.streak||0);
+      G.bestStreak=Math.max(G.bestStreak,stats.best_streak||0);
+    }
+    const {data:progress}=await sb.from('user_progress').select('*').eq('user_id',userId);
+    if(progress&&progress.length){
+      progress.forEach(row=>{
+        const s=wstate(row.vocab_id);
+        if(row.learned)s.learned=true;
+        s.reps=Math.max(s.reps||0,row.mastery_level||0);
+        if(s.learned||s.reps>0)s.seen=true;
+      });
+    }
+    showSync('✓ Chargé','ok');
+  }catch(e){showSync('✗ Erreur chargement','err');}
+}
+
+function getSiteId(){
+  const h=window.location.hostname.replace(/[^a-z0-9]/gi,'_').toLowerCase();
+  return h||'localhost';
+}
+
+// ===================== Assemblage final — tout concaténé
 const VOCAB_RAW = [
   ...VOCAB_DEEL2,
   ...VOCAB_DEEL2_EXTRA
@@ -5781,6 +5849,7 @@ const GLOBAL_ACCEPT=new Set();VOCAB.forEach(v=>v.accept.forEach(a=>GLOBAL_ACCEPT
 // ===================== STATE =====================
 const G={xp:0,streak:0,bestStreak:0,totalCorrect:0,totalWrong:0,totalAnswered:0,word:new Map(),lessonDone:new Set()};
 const SAVE_KEY='physioProgress';
+let _syncTimer=null;
 function saveProgress(){
   try{
     localStorage.setItem(SAVE_KEY,JSON.stringify({
@@ -5789,6 +5858,8 @@ function saveProgress(){
       word:[...G.word.entries()],lessonDone:[...G.lessonDone]
     }));
   }catch(e){}
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(syncToSupabase,1500);
 }
 function loadProgress(){
   try{
@@ -5802,7 +5873,7 @@ function loadProgress(){
   }catch(e){}
 }
 loadProgress();
-window.addEventListener('beforeunload',saveProgress);
+window.addEventListener('beforeunload',()=>{saveProgress();syncToSupabase();});
 function wstate(id){if(!G.word.has(id))G.word.set(id,{ef:2.5,interval:0,reps:0,mastered:false,learned:false,seen:false,everWrong:false});return G.word.get(id);}
 function learnedCount(){let n=0;G.word.forEach(s=>{if(s.learned)n++;});return n;}
 function learnedInUnit(u){let n=0;BY_UNIT[u].forEach(w=>{const s=G.word.get(w.id);if(s&&s.learned)n++;});return n;}
@@ -6410,6 +6481,15 @@ function inlineFormat(text) {
   text = text.replace(/➔/g, '<span style="color:var(--accent)">▸</span>');
   return text;
 }
+
+// ===================== STARTUP =====================
+(async function startup(){
+  SB_USER=getSiteId();
+  await loadFromSupabase(SB_USER);
+  saveProgress();
+  renderPath();
+  renderRail();
+})();
 
 </script>
 </body>
