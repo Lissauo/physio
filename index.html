@@ -323,15 +323,9 @@ button{font-family:inherit}
 }
 #mdRendered a { color:var(--accent) }
 #mdRendered code { background:var(--code-bg); color:var(--text) }
-.sync-indicator{position:fixed;bottom:80px;right:16px;z-index:500;background:var(--bg);border:2px solid var(--border);border-radius:12px;padding:8px 14px;font-size:13px;font-weight:700;color:var(--muted);box-shadow:var(--shadow);display:flex;align-items:center;gap:8px;transition:opacity .3s;pointer-events:none}
-.sync-indicator.syncing{color:var(--accent)}
-.sync-indicator.ok{color:var(--primary)}
-.sync-indicator.err{color:var(--error)}
-@media(min-width:700px){.sync-indicator{bottom:16px}}
 </style>
 
 <body>
-<div id="syncIndicator" class="sync-indicator" style="display:none"></div>
 <div class="app">
   <aside class="sidebar">
     <div class="logo">
@@ -5704,12 +5698,7 @@ const SB_KEY='sb_publishable_3k0IL0r_GId5OUz5TmhKpA_y86GzBOD';
 const sb=(typeof window.supabase!=='undefined')?window.supabase.createClient(SB_URL,SB_KEY):null;
 let SB_USER=null;
 
-function showSync(msg,cls){
-  const el=document.getElementById('syncIndicator');
-  if(!el)return;
-  el.textContent=msg;el.className='sync-indicator '+cls;el.style.display='flex';
-  if(cls==='ok'||cls==='err')setTimeout(()=>{el.style.opacity='0';setTimeout(()=>{el.style.display='none';el.style.opacity='1';},600);},2500);
-}
+function showSync(){}
 
 async function syncToSupabase(){
   if(!sb||!SB_USER)return;
