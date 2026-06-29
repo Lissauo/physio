@@ -6370,10 +6370,14 @@ function renderStats(){
 }
 
 // ===================== INIT =====================
-paintIcons();
-buildPratiquer();
-renderPath();
-renderRail();
+async function init() {
+  paintIcons();
+  buildPratiquer();
+  await loadProgress(); // Wacht op database load
+  renderPath();
+  renderRail();
+}
+init();
 
 
 // ===================== COURS (MD READER) =====================
